@@ -75,8 +75,8 @@ let g:SingleLineComment = {
 
 " MultiLineComment: filetype => [start, stop, linestart, fillchar]
 let g:MultiLineComment = {
-    \ 'c':        ['/*',    '*/', ' *', '*'],
-    \ 'css':      ['/*',    '*/', ' *', '*'],
+    \ 'c':        ['/*',    '*/', '*', '*'],
+    \ 'css':      ['/*',    '*/', '*', '*'],
     \ 'entity':   ["<!--", '-->', ' !', ''],
     \ 'html':     ["<!--", '-->', ' !', ''],
     \ 'markdown': ["<!--", '-->', ' !', ''],
@@ -105,7 +105,7 @@ function! g:GetBlockCommentStrings(filetype)
         \     l:config[2]
         \ ]
     " take a guess, using VIM &cms
-    else has('folding') && (&cms != '')
+    elseif has('folding') && (&cms != '')
         let [l:left, l:right] = split(&cms,'%s',1)
         " single-line
         if l:right == ''
@@ -143,7 +143,7 @@ function! g:GetCommentStrings(filetype)
         let l:config = g:MultiLineComment[a:filetype]
         return [l:config[0], l:config[1]]
     " take a guess, using VIM &cms
-    else has('folding') && (&cms != '')
+    elseif has('folding') && (&cms != '')
         return split(&cms,'%s',1)
         "----------------------------------------
         " return [substitute(l:left,'\S\zs$',' ',''),
