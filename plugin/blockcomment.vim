@@ -19,8 +19,13 @@ endif
 " > join neighboring comment blocks if overlap is detected
 " > detect inner file type (php -> html -> javascript)
 " > provide bindings to be used with a motion command
-" > provide blockcomment with left/right pairs each line
+" > provide blockcomment with left/right pairs each line (adapt aoMarker)
+" > smarter pointer restorage
+" > 
 
+" TODO: check if repeat#set is present
+" TODO: whitespace when uncommenting blank lines...?
+" TODO: action when toggle blank lines?
 
 " mappings {{{1
 " plugins {{{2
@@ -83,7 +88,7 @@ let g:MultiLineComment = {
     \ 'xml':      ["<!--", '-->', ' !', '']
     \ }
 
-" returns [blockstart, blockstop, textformat]
+" returns [left, right, start, stop, textformat]
 function! g:GetBlockCommentStrings(filetype)
     let l:repeat = 40
     " prefer single-line comments
@@ -91,18 +96,20 @@ function! g:GetBlockCommentStrings(filetype)
         let l:config = g:SingleLineComment[a:filetype]
         let l:effrep = l:config[1] == '' ? 0 : l:repeat / strlen(l:config[1])
         return [
+        \     l:config[0],
+        \     '',
         \     l:config[0] . repeat(l:config[1], l:repeat),
-        \     l:config[0] . repeat(l:config[1], l:repeat),
-        \     l:config[0]
+        \     l:config[0] . repeat(l:config[1], l:repeat)
         \ ]
     " alternatively use multi-line comments
     elseif has_key(g:MultiLineComment, a:filetype)
         let l:config = g:MultiLineComment[a:filetype]
         let l:effrep = l:config[3] == '' ? 0 : l:repeat / strlen(l:config[3])
         return [
+        \     l:config[2],
+        \     '',
         \     l:config[0] . repeat(l:config[3], l:effrep),
-        \     l:config[2] . repeat(l:config[3], l:effrep) . l:config[1],
-        \     l:config[2]
+        \     l:config[2] . repeat(l:config[3], l:effrep) . l:config[1]
         \ ]
     " take a guess, using VIM &cms
     elseif has('folding') && (&cms != '')
@@ -110,24 +117,27 @@ function! g:GetBlockCommentStrings(filetype)
         " single-line
         if l:right == ''
             return [
+            \     l:left,
+            \     '',
             \     l:left . repeat(' -', l:repeat/2),
-            \     l:left . repeat(' -', l:repeat/2),
-            \     l:left
+            \     l:left . repeat(' -', l:repeat/2)
             \ ]
         " multi-line
         else
             return [
+            \     '-',
+            \     '',
             \     substitute(l:left,'\S\zs$',' ','') . repeat('-', l:repeat),
-            \     repeat('-', l:repeat) . substitute(l:right,'^\ze\S',' ',''),
-            \     '-'
+            \     repeat('-', l:repeat) . substitute(l:right,'^\ze\S',' ','')
             \ ]
         endif
     " default to '#'
     else
         return [
+        \     '#',
+        \     '',
         \     '#'.repeat('-', l:repeat),
-        \     '#'.repeat('-', l:repeat),
-        \     '#'
+        \     '#'.repeat('-', l:repeat)
         \ ]
     endif
 endfunction
@@ -145,10 +155,6 @@ function! g:GetCommentStrings(filetype)
     " take a guess, using VIM &cms
     elseif has('folding') && (&cms != '')
         return split(&cms,'%s',1)
-        "----------------------------------------
-        " return [substitute(l:left,'\S\zs$',' ',''),
-        "         \ substitute(l:right,'^\ze\S',' ','')]
-        "----------------------------------------
     " default to '#'
     else
         return ['#', '']
@@ -170,113 +176,149 @@ function! s:ColToVirtual(string, physical)
 endfunction
 
 function! s:IsBlank(line)
-    return a:line =~ "^\s*$"
+    return a:line =~ '^\s*$'
 endfunction
 
-function! s:GetBlank(line)
-    return matchstr(a:line, "^\s*")
+" NOTE: trailing spaces are preserved by appending them to the right
+function! s:AddComment(text, ci)
+    let l:match = matchlist(a:text, '\v^(\s*)(.{-})(\s*)$')[1:3]
+    let l:left = l:match[0] . a:ci['lIns'] . s:BackupComments(l:match[1], a:ci)
+    let l:right = a:ci['rIns'] . l:match[2]
+    return l:left . l:right
 endfunction
 
-" returns [indent, text]
-function! s:SplitLine(line)
-    return matchlist(a:line, '\v^(\s*)(.*)$')[1:2]
-endfunction
-
-function! s:IsComment(text, cLeft, cRight)
-    return (a:cLeft == '' || a:text[:strlen(a:cLeft)] == a:cLeft) &&
-        \ (a:cRight == '' || a:text[-strlen(a:cRight):] == a:cRight)
-endfunction
-
-function! s:ExtractText(text, cLeft, cRight)
-    let l:left = strlen(a:cLeft)
-    let l:right = strlen(a:cRight)
-    let l:len = strlen(a:text)
-    let l:isComment = (l:left == 0 || strpart(a:text, 0, l:left) == a:cLeft) &&
-            \ (l:right == 0 || strpart(a:text, l:len-l:right-1) == a:cRight)
-    if l:isComment
-        return [1, strpart(a:text, l:left, l:len-l:left-l:right)]
+function! s:RemoveComment(text, ci)
+    let l:match = matchlist(a:text, a:ci['cPat'])[1:3]
+    if !empty(l:match)
+        return [1, l:match[0] . s:RestoreComments(l:match[1], a:ci) . l:match[2]]
     else
-        return [0, a:text]
+        return [0, '']
     endif
 endfunction
 
-function! s:AnalyzeLine(text, cLeft, cRight)
+function! s:IsComment(text, ci)
+    return a:text =~ a:ci['cPat']
 endfunction
 
-function! s:CommentText(text, cLeft, cRight)
+" rightmost (optional) argument: rCol = right alignment
+function! s:AddCommentAlign(text, ci, lCol, ...)
+    let l:match = matchlist(a:text, '\v^(\s*)%'.(a:lCol+1).'v(.{-})(\s*)$')[1:3]
+    let l:left = l:match[0] . a:ci['lIns'] . s:BackupComments(l:match[1], a:ci)
+    let l:right = a:ci['rIns'] . l:match[2]
+    if a:0 == 1 && a:1 > 0
+        let l:ins = a:1 - strdisplaywidth(l:left)
+        if l:ins > 0
+            let l:left .= repeat(' ', l:ins)
+        endif
+    endif
+    return l:left . l:right
 endfunction
+
+function! s:GetCommentInfo(cs)
+    " cPat matches: [leading-ws, text, trailing-ws]
+    let l:ci = {
+        \ 'lIns': substitute(a:cs[0],'\S\zs$',' ',''),
+        \ 'rIns': substitute(a:cs[1],'^\ze\S',' ',''),
+        \ 'cPat': '\v^(\s*)\V'.escape(a:cs[0],'\').
+                    \ '\v ?(.{-}) {-}\V'.escape(a:cs[1],'\').
+                    \ '\v(\s*)$'
+    \}
+    " block comment
+    if len(a:cs) >= 4
+        let l:ci.aPat = '\v^\s*\V'.escape(a:cs[2], '\').'\v\s*$'
+        let l:ci.oPat = '\v^\s*\V'.escape(a:cs[3], '\').'\v\s*$'
+        if l:ci['aPat'] == l:ci['oPat']
+            let l:ci.mPat = l:ci['aPat']
+        else
+            let l:ci.mPat = '\('.l:ci['aPat'].'\v)|('.l:ci['oPat'].'\v)'
+        endif
+    endif
+    return l:ci
+endfunction
+
 
 
 function! s:GetMultilineIndent(firstln, lastln)
     " find minimal virtual indentation level
     let l:indent = 0
-    let l:lineNo = -1
-    for l:midline in range(a:firstln, a:lastln)
-        if !s:IsBlank(getline(l:midline)) &&
-                    \ (l:lineNo == -1 || indent(l:midline) < l:indent)
-            let l:indent = indent(l:midline)
-            let l:lineNo = l:midline
+    let l:matchLine = -1
+    for l:lineNo in range(a:firstln, a:lastln)
+        if !s:IsBlank(getline(l:lineNo)) &&
+                    \ (l:matchLine == -1 || indent(l:lineNo) < l:indent)
+            let l:indent = indent(l:lineNo)
+            let l:matchLine = l:lineNo
         endif
     endfor
+    if l:matchLine == -1
+        let l:matchLine = a:firstln
+    endif
     " preserve existing indentation (except for whitespace lines):
     " (might be important, e.g. for Makefile)
     if (l:indent % &tabstop) != 0
-        for l:midline in range(a:firstln, a:lastln)
-            let l:line = getline(l:midline)
-            if !s:IsBlank(l:line) && s:ColToPhysical(l:line, l:indent) == -1
+        for l:lineNo in range(a:firstln, a:lastln)
+            let l:line = getline(l:lineNo)
+            if strdisplaywidth(l:line) >= l:indent &&
+                    \ s:ColToPhysical(l:line, l:indent) == -1
                 let l:indent = (l:indent % &tabstop)
                 break
             endif
         endfor
     endif
     " return
-    let l:line = getline(l:lineNo)
-    let l:padd = strpart(l:line, 0, s:ColToPhysical(l:line, l:indent))
-    return [ l:indent, l:lineNo, l:padd ]
+    let l:padd = matchstr(getline(l:matchLine), '^\s*\%'.(l:indent+1).'v')
+    return [ l:indent, l:matchLine, l:padd ]
+endfunction
+
+function! s:GetDisplayWidth(firstln, lastln)
+    let l:displaywidth = 0
+    for l:lineNo in range(a:firstln, a:lastln)
+        let l:displaywidth = max([l:displaywidth, strdisplaywidth(getline(l:lineNo))])
+    endfor
+    return l:displaywidth
 endfunction
 
 
-function! s:BackupMultiLineComments(str, ft)
-    " TODO:
-    "-------------------------------------------------(
-    " let l:str = substitute(a:str, '\V'.escape(s:comment_strt, '\'), s:comment_strtbak, "g")
-    " let l:str = substitute(l:str, '\V'.escape(s:comment_stop, '\'), s:comment_stopbak, "g")
-    "-------------------------------------------------)
-    return l:str
+function! s:BackupComments(str, ci)
+    " TODO...
+    return a:str
 endfunction
 
-function! s:RestoreMultiLineComments(str, ft)
-    " if s:comment_bkup == 1
-    " 	let l:line = substitute(l:line, escape(s:comment_strtbak, '\*^$.~[]'), s:comment_strt, "g")
-    " 	let l:line = substitute(l:line, escape(s:comment_stopbak, '\*^$.~[]'), s:comment_stop, "g")
-    " endif
-    return l:str
+function! s:RestoreComments(str, ci)
+    " TODO...
+    return a:str
 endfunction
 
 
 
 " block (=aligned) comments {{{2
-" block (=aligned) commenting {{{3
 function! s:BlockComment() range
     call s:BlockCommentWork(a:firstline, a:lastline)
 endfunction
+function! s:BlockUnComment() range
+    call s:BlockUnCommentWork(a:firstline, a:lastline)
+endfunction
+function! s:ToggleBlockComment() range
+    call s:ToggleBlockCommentWork(a:firstline, a:lastline)
+endfunction
 
+" block (=aligned) commenting {{{3
 function! s:BlockCommentWork(firstln, lastln)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
+    let l:pos = getpos('.')
 
 	" get comment chars
-    let [l:cStart, l:cStop, l:cLeft] = g:GetBlockCommentStrings(&ft)
-    let l:leftIns = substitute(l:cLeft,'\S\zs$',' ','')
+    let l:cs = g:GetBlockCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
 
-    " get cursor position
-    let l:cursor_line = line(".")
-    let l:cursor_col = col(".") + strlen(l:leftIns)
-
-	" get minimum indentation level among all relevant lines
-    let l:indent_info = s:GetMultilineIndent(l:firstln, l:lastln)
-    let l:indent = l:indent_info[0]
-    let l:padding = l:indent_info[2]
+	" get common alignment levels
+    let [l:lCol, l:lNo, l:pad] = s:GetMultilineIndent(l:firstln, l:lastln)
+    if l:cs[1] != ''
+        let l:rCol = s:GetDisplayWidth(l:firstln, l:lastln)
+        let l:rCol += strlen(l:ci['lIns'])
+    else
+        let l:rCol = -1
+    endif
 
     " 
 	let l:mayappend = 1
@@ -284,194 +326,152 @@ function! s:BlockCommentWork(firstln, lastln)
 
     " TODO: join preceding/trailing blockcomments (if indentation level fits)
 
-    " append comment block end marker
 	if l:mayappend
-		call append(l:lastln, l:padding . l:cStop)
+		call append(l:lastln, l:pad . l:cs[3])
 	endif
-    " prepend comment block start marker
 	if l:mayprepend
-		call append(l:firstln - 1, l:padding . l:cStart)
+		call append(l:firstln - 1, l:pad . l:cs[2])
 		let l:firstln += 1
 		let l:lastln += 1
-		let l:cursor_line += 1
+		let l:pos[1] += 1
 	endif
 
-	" loop for each line
-	for l:midline in range(l:firstln, l:lastln)
-		let l:line = getline(l:midline)
+    call s:DoBlockComment(l:firstln, l:lastln, l:ci, l:lCol, l:rCol, l:pad)
 
-		" trivial line: blank + less indentation
-        if indent(l:midline) < l:indent
-            let l:line = ""
-		" non-trivial line
-        else
-            let l:pindent = s:ColToPhysical(l:line, l:indent)
-            let l:padding = strpart(l:line, 0, l:pindent)
-            let l:line = strpart(l:line, l:pindent)
-            " let l:line = BackupMultiLineComments(l:line, &ft)
+    call setpos('.', l:pos)
+endfunction
+
+function! s:DoBlockComment(firstln, lastln, ci, left, right, pad)
+	for l:lineNo in range(a:firstln, a:lastln)
+        let l:line = getline(l:lineNo)
+        if s:IsBlank(l:line) && l:line !~ '\v^\s*%'.(a:left+1).'v'
+            let l:line = a:pad
         endif
-        call setline(l:midline, l:padding . l:leftIns . l:line)
+        call setline(l:lineNo, s:AddCommentAlign(l:line, a:ci, a:left, a:right))
 	endfor
-
-	" set cursor position
-    call cursor(l:cursor_line, l:cursor_col)
 endfunction
 
 " block uncommenting {{{3
-function! s:BlockUnComment() range
-    call s:BlockUnCommentWork(a:firstline, a:lastline)
-endfunction
-
 function! s:BlockUnCommentWork(firstln, lastln)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
+    let l:pos = getpos('.')
 
 	" get comment chars
-    let [l:cStart, l:cStop, l:cLine] = g:GetBlockCommentStrings(&ft)
-	let l:clen = strlen(l:cLine)
-    let l:stopLeft = strlen(matchstr(l:cStop, '^\s*'))
-    let l:startLeft = strlen(matchstr(l:cStart, '^\s*'))
-    let l:lineLeft = strlen(matchstr(l:cLine, '^\s*'))
+    let l:cs = g:GetBlockCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
 
-    " get cursor position
-    " let l:pos = getpos() TODO
-    let l:cursor_line = line(".")
-    let l:cursor_col = col(".")
     " let l:comment_start = 0
     " let l:comment_end = 0
 
 	" loop for each line
-    let l:midline = l:firstln
-	while l:midline <= l:lastln
-		" get indent level
-		let l:line = getline(l:midline)
-		let l:indent = s:ColToPhysical(l:line, indent(l:midline))
+    let l:lineNo = l:firstln
+	while l:lineNo <= l:lastln
+		let l:line = getline(l:lineNo)
 
         " block comment start/stop line - delete line
-		if strpart(l:line, l:indent - l:startLeft) == l:cStart ||
-         \ strpart(l:line, l:indent - l:stopLeft) == l:cStop
-			execute l:midline . "d"
-			let l:midline = l:midline - 1
-			let l:lastln = l:lastln - 1
-            if l:midline < l:cursor_line
-                let l:cursor_line -= 1
+		if l:line =~ l:ci['mPat'] 
+			execute l:lineNo . 'd'
+			let l:lineNo -= 1
+			let l:lastln -= 1
+            if l:lineNo < l:pos[1]
+                let l:pos[1] -= 1
             endif
 
 		" commented code line - remove comment
-		elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
-			let l:pad = strpart(l:line, 0, l:indent - l:lineLeft)
-			let l:line = strpart(l:line, l:indent - l:lineLeft + l:clen)
-            if l:midline == l:cursor_line && l:cursor_col >= l:indent + l:clen
-                let l:cursor_col -= l:clen
+		else
+            let [l:isComment, l:text] = s:RemoveComment(l:line, l:ci)
+            if l:isComment
+                call setline(l:lineNo, l:text)
             endif
-            " delete 1 space if present
-            let l:line = substitute(l:line, '^ ', '', '')
-
-            " if l:midline == l:firstln
-                " let l:comment_start = 1
-            " endif
-            " if l:midline == l:lastln
-                " let l:comment_end = 1
-            " endif
-
-            " let l:line = RestoreMultiLineComment(l:line, &filetype)
-			call setline(l:midline, l:pad . l:line)
 		endif
 
-		let l:midline = l:midline + 1
+		let l:lineNo = l:lineNo + 1
 	endwhile
 
 	" look at line above block
     " if l:comment_start
         let l:line = getline(l:firstln - 1)
-        let l:indent = s:ColToPhysical(l:line, indent(l:firstln - 1))
 
         " abandoned begin comment block line - delete line
-        if strpart(l:line, l:indent - l:startLeft) == l:cStart
-            execute (l:firstln - 1) . "d"
-            let l:firstln = l:firstln - 1
-            let l:lastln = l:lastln - 1
-            let l:cursor_line -= 1
-
-        " abandoned commented code line - insert end comment block line
-        elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
-            let l:pad = strpart(l:line, 0, l:indent)
-            call append(l:firstln - 1, l:pad . l:cStop)
-            let l:lastln = l:lastln + 1
-            let l:cursor_line += 1
+        if l:line =~ l:ci['aPat']
+            execute (l:firstln - 1) . 'd'
+            let l:firstln -= 1
+            let l:lastln -= 1
+            let l:pos[1] -= 1
+        else
+            let l:match = matchlist(l:line, l:ci['cPat'])[1:3]
+            " abandoned commented code line - insert end comment block line
+            if !empty(l:match)
+                call append(l:firstln - 1, l:match[0] . l:cs[3])
+                let l:firstln += 1
+                let l:lastln += 1
+                let l:pos[1] += 1
+            endif
         endif
     " endif
 
 	" look at line below block
     " if l:comment_end
         let l:line = getline(l:lastln + 1)
-        let l:indent = s:ColToPhysical(l:line, indent(l:lastln + 1))
 
         " abandoned end comment block line - delete line
-        if strpart(l:line, l:indent - l:stopLeft) == l:cStop
-            execute (l:lastln + 1) . "d"
+        if l:line =~ l:ci['oPat']
+            execute (l:lastln + 1) . 'd'
             let l:lastln = l:lastln - 1
-
-        " abandoned commented code line - insert begin comment block line
-        elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
-            let l:pad = strpart(l:line, 0, l:indent)
-            call append(l:lastln, l:pad . l:cStart)
+        else
+            let l:match = matchlist(l:line, l:ci['cPat'])[1:3]
+            " abandoned commented code line - insert begin comment block line
+            if !empty(l:match)
+                call append(l:lastln, l:match[0] . l:cs[2])
+            endif
         endif
     " endif
 
-    call cursor(l:cursor_line, l:cursor_col)
+    call setpos('.', l:pos)
 endfunction
 
 " toggle block comments {{{3
-function! s:ToggleBlockComment() range
-    call s:ToggleBlockCommentWork(a:firstline, a:lastline)
-endfunction
-
 function! s:ToggleBlockCommentWork(firstln, lastln) range
     let l:firstln = a:firstln
     let l:lastln = a:lastln
 
 	" get comment chars
-    let [l:cStart, l:cStop, l:cLine] = g:GetBlockCommentStrings(&ft)
-	let l:clen = strlen(l:cLine)
-    let l:stopLeft = strlen(matchstr(l:cStop, '^\s*'))
-    let l:startLeft = strlen(matchstr(l:cStart, '^\s*'))
-    let l:lineLeft = strlen(matchstr(l:cLine, '^\s*'))
+    let l:cs = g:GetBlockCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
 
 	" loop for each line
     let l:type = 'w'
 	let l:startln = l:lastln
 	let l:stopln = l:lastln
-	let l:midline = l:lastln
-    while l:midline >= l:firstln
-		let l:line = getline(l:midline)
-        let l:indent = s:ColToPhysical(l:line, indent(l:midline))
+	let l:lineNo = l:lastln
+    while l:lineNo >= l:firstln
+		let l:line = getline(l:lineNo)
+        let l:indent = s:ColToPhysical(l:line, indent(l:lineNo))
 
 		let l:do_comment = 0
 		let l:do_uncomment = 0
 		let l:decrement = 0
 
 		" comment
-		if strpart(l:line, l:indent - l:stopLeft) == l:cStop ||
-                \ strpart(l:line, l:indent - l:startLeft) == l:cStart ||
-                \ strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
+		if l:line =~ l:ci['cPat'] || l:line =~ l:ci['mPat']
 			if l:type == 'w'
-				let l:stopln = l:midline
+				let l:stopln = l:lineNo
 			elseif l:type == 'tw'
 				let l:do_comment = 1
 			elseif l:type == 't'
 				let l:do_comment = 1
-				let l:startln = l:midline + 1
+				let l:startln = l:lineNo + 1
 			endif
 			let l:type = 'c'
 
 		" text
 		elseif !s:IsBlank(l:line)
 			if l:type == 'w'
-				let l:stopln = l:midline
+				let l:stopln = l:lineNo
 			elseif l:type == 'c'
 				let l:do_uncomment = 1
-				let l:startln = l:midline + 1
+				let l:startln = l:lineNo + 1
 			endif
 			let l:type = 't'
 
@@ -480,23 +480,23 @@ function! s:ToggleBlockCommentWork(firstln, lastln) range
 			if l:type == 'c'
 				let l:type = 'w'
 				let l:do_uncomment = 1
-				let l:startln = l:midline + 1
+				let l:startln = l:lineNo + 1
 			elseif l:type == 't'
 				let l:type = 'tw'
-				let l:startln = l:midline + 1
+				let l:startln = l:lineNo + 1
 			endif
 		endif
 
 		" perform operation
 		if l:do_comment
             call s:BlockCommentWork(l:startln, l:stopln)
-			let l:stopln = l:midline
+			let l:stopln = l:lineNo
 		elseif l:do_uncomment
             call s:BlockUnCommentWork(l:startln, l:stopln)
-			let l:stopln = l:midline
+			let l:stopln = l:lineNo
 		endif
 
-		let l:midline -= 1
+		let l:lineNo -= 1
     endwhile
 
 	let l:do_comment = 0
@@ -513,10 +513,10 @@ function! s:ToggleBlockCommentWork(firstln, lastln) range
 	endif
 	if l:do_comment
         call s:BlockCommentWork(l:startln, l:stopln)
-		let l:stopln = l:midline
+		let l:stopln = l:lineNo
 	elseif l:do_uncomment
         call s:BlockUnCommentWork(l:startln, l:stopln)
-		let l:stopln = l:midline
+		let l:stopln = l:lineNo
 	endif
 endfunction
 " 3}}}
@@ -526,31 +526,28 @@ endfunction
 " add simple comments {{{3
 " TODO: handle BackupComment() properly
 function! s:Comment() range
-    let [l:left, l:right] = g:GetCommentStrings(&ft)
-    let l:leftIns = substitute(l:left,'\S\zs$',' ','')
-    let l:rightIns = substitute(l:right,'^\ze\S',' ','')
-    for l:midline in range(a:firstline, a:lastline)
-        let [l:pad, l:line] = s:SplitLine(getline(l:midline))
-        if l:line != ''
-            " TODO: BackupComment
-            call setline(l:midline, l:pad . l:leftIns . l:line . l:rightIns)
+    let l:cs = g:GetCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
+
+    for l:lineNo in range(a:firstline, a:lastline)
+        let l:line = getline(l:lineNo)
+        if !s:IsBlank(l:line)
+            call setline(l:lineNo, s:AddComment(l:line, l:ci))
         endif
     endfor
 endfunction
 
 " remove simple comments {{{3
 function! s:UnComment() range
-    let [l:left, l:right] = g:GetCommentStrings(&ft)
-    for l:midline in range(a:firstline, a:lastline)
-        let [l:pad, l:line] = s:SplitLine(getline(l:midline))
-        if l:line != ''
-            let [l:isComment, l:text] = s:ExtractText(l:line, l:left, l:right)
+    let l:cs = g:GetCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
+
+    for l:lineNo in range(a:firstline, a:lastline)
+        let l:line = getline(l:lineNo)
+        if !s:IsBlank(l:line)
+            let [l:isComment, l:text] = s:RemoveComment(l:line, l:ci)
             if l:isComment
-                " delete 1 space left+right if present
-                let l:text = substitute(l:text, '^ ', '', '')
-                let l:text = substitute(l:text, ' $', '', '')
-                " TODO: RestoreComment
-                call setline(l:midline, l:pad . l:text)
+                call setline(l:lineNo, l:text)
             endif
         endif
     endfor
@@ -558,22 +555,17 @@ endfunction
 
 " toggle simple comments {{{3
 function! s:ToggleComment() range
-    let [l:left, l:right] = g:GetCommentStrings(&ft)
-    let l:leftIns = substitute(l:left,'\S\zs$',' ','')
-    let l:rightIns = substitute(l:right,'^\ze\S',' ','')
+    let l:cs = g:GetCommentStrings(&ft)
+    let l:ci = s:GetCommentInfo(l:cs)
+
     for l:lineNo in range(a:firstline, a:lastline)
-        let [l:pad, l:line] = s:SplitLine(getline(l:lineNo))
-        if l:line != ''
-            let [l:isComment, l:text] = s:ExtractText(l:line, l:left, l:right)
+        let l:line = getline(l:lineNo)
+        if !s:IsBlank(l:line)
+            let [l:isComment, l:text] = s:RemoveComment(l:line, l:ci)
             if l:isComment
-                " delete 1 space if present
-                let l:text = substitute(l:text, '^ ', '', '')
-                let l:text = substitute(l:text, ' $', '', '')
-                " TODO: RestoreComment
-                call setline(l:lineNo, l:pad . l:text)
+                call setline(l:lineNo, l:text)
             else
-                " TODO: BackupComment
-                call setline(l:lineNo, l:pad . l:leftIns . l:line . l:rightIns)
+                call setline(l:lineNo, s:AddComment(l:line, l:ci))
             endif
         endif
     endfor
@@ -582,4 +574,4 @@ endfunction
 " 2}}}
 " 1}}}
 
-" vim: fdm=manual fdl=0
+" vim: fdm=marker fdl=0
