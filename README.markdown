@@ -8,5 +8,5 @@ The comments will be nicely aligned.
 
 ### Current status
 
-The plugin is currently under heavy development and neither thoroughly tested nor stable.
+Currently, the plugin is under development and neither thoroughly tested nor stable.
 
