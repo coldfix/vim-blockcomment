@@ -329,6 +329,9 @@ function! s:BlockUnCommentWork(firstln, lastln)
 	" get comment chars
     let [l:cStart, l:cStop, l:cLine] = g:GetBlockCommentStrings(&ft)
 	let l:clen = strlen(l:cLine)
+    let l:stopLeft = strlen(matchstr(l:cStop, '^\s*'))
+    let l:startLeft = strlen(matchstr(l:cStart, '^\s*'))
+    let l:lineLeft = strlen(matchstr(l:cLine, '^\s*'))
 
     " get cursor position
     " let l:pos = getpos() TODO
@@ -345,8 +348,8 @@ function! s:BlockUnCommentWork(firstln, lastln)
 		let l:indent = s:ColToPhysical(l:line, indent(l:midline))
 
         " block comment start/stop line - delete line
-		if strpart(l:line, l:indent) == l:cStart ||
-         \ strpart(l:line, l:indent) == l:cStop
+		if strpart(l:line, l:indent - l:startLeft) == l:cStart ||
+         \ strpart(l:line, l:indent - l:stopLeft) == l:cStop
 			execute l:midline . "d"
 			let l:midline = l:midline - 1
 			let l:lastln = l:lastln - 1
@@ -355,9 +358,9 @@ function! s:BlockUnCommentWork(firstln, lastln)
             endif
 
 		" commented code line - remove comment
-		elseif strpart(l:line, l:indent, l:clen) == l:cLine
-			let l:pad = strpart(l:line, 0, l:indent)
-			let l:line = strpart(l:line, l:indent + l:clen)
+		elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
+			let l:pad = strpart(l:line, 0, l:indent - l:lineLeft)
+			let l:line = strpart(l:line, l:indent - l:lineLeft + l:clen)
             if l:midline == l:cursor_line && l:cursor_col >= l:indent + l:clen
                 let l:cursor_col -= l:clen
             endif
@@ -384,14 +387,14 @@ function! s:BlockUnCommentWork(firstln, lastln)
         let l:indent = s:ColToPhysical(l:line, indent(l:firstln - 1))
 
         " abandoned begin comment block line - delete line
-        if strpart(l:line, l:indent) == l:cStart
+        if strpart(l:line, l:indent - l:startLeft) == l:cStart
             execute (l:firstln - 1) . "d"
             let l:firstln = l:firstln - 1
             let l:lastln = l:lastln - 1
             let l:cursor_line -= 1
 
         " abandoned commented code line - insert end comment block line
-        elseif strpart(l:line, l:indent, l:clen) == l:cLine
+        elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
             let l:pad = strpart(l:line, 0, l:indent)
             call append(l:firstln - 1, l:pad . l:cStop)
             let l:lastln = l:lastln + 1
@@ -405,12 +408,12 @@ function! s:BlockUnCommentWork(firstln, lastln)
         let l:indent = s:ColToPhysical(l:line, indent(l:lastln + 1))
 
         " abandoned end comment block line - delete line
-        if strpart(l:line, l:indent) == l:cStop
+        if strpart(l:line, l:indent - l:stopLeft) == l:cStop
             execute (l:lastln + 1) . "d"
             let l:lastln = l:lastln - 1
 
         " abandoned commented code line - insert begin comment block line
-        elseif strpart(l:line, l:indent, l:clen) == l:cLine
+        elseif strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
             let l:pad = strpart(l:line, 0, l:indent)
             call append(l:lastln, l:pad . l:cStart)
         endif
@@ -431,6 +434,9 @@ function! s:ToggleBlockCommentWork(firstln, lastln) range
 	" get comment chars
     let [l:cStart, l:cStop, l:cLine] = g:GetBlockCommentStrings(&ft)
 	let l:clen = strlen(l:cLine)
+    let l:stopLeft = strlen(matchstr(l:cStop, '^\s*'))
+    let l:startLeft = strlen(matchstr(l:cStart, '^\s*'))
+    let l:lineLeft = strlen(matchstr(l:cLine, '^\s*'))
 
 	" loop for each line
     let l:type = 'w'
@@ -446,9 +452,9 @@ function! s:ToggleBlockCommentWork(firstln, lastln) range
 		let l:decrement = 0
 
 		" comment
-		if strpart(l:line, l:indent) == l:cStop ||
-                \ strpart(l:line, l:indent) == l:cStart ||
-                \ strpart(l:line, l:indent, l:clen) == l:cLine
+		if strpart(l:line, l:indent - l:stopLeft) == l:cStop ||
+                \ strpart(l:line, l:indent - l:startLeft) == l:cStart ||
+                \ strpart(l:line, l:indent - l:lineLeft, l:clen) == l:cLine
 			if l:type == 'w'
 				let l:stopln = l:midline
 			elseif l:type == 'tw'
