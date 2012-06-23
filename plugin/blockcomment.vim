@@ -88,6 +88,13 @@ let g:MultiLineComment = {
     \ 'xml':      ["<!--", '-->', ' !', '']
     \ }
 
+let g:SyntaxRegions = {
+    \ 'php': [['', 'html'], ['html.*', 'html'],
+    \           ['phpRegion', 'php'], ['javaScript', 'javascript']],
+    \ 'html': [['', 'html'], ['html.*', 'html'],
+    \           ['javaScript', 'javascript']]
+    \ }
+
 " returns [left, right, start, stop, textformat]
 function! g:GetBlockCommentStrings(filetype)
     let l:repeat = 40
@@ -230,10 +237,30 @@ function! s:GetCommentInfo(cs)
         if l:ci['aPat'] == l:ci['oPat']
             let l:ci.mPat = l:ci['aPat']
         else
-            let l:ci.mPat = '\('.l:ci['aPat'].'\v)|('.l:ci['oPat'].'\v)'
+            let l:ci.mPat = '\('.l:ci['aPat'].')|('.l:ci['oPat'].')'
         endif
     endif
     return l:ci
+endfunction
+
+function! s:GuessSyntaxRegion(line, col)
+    if has_key(g:SyntaxRegions, &ft) && exists("*synstack")
+        let l:regions = g:SyntaxRegions[&ft]
+        let l:synstack = synstack(line('.'), col('.'))
+        if !empty(l:synstack)
+            for l:synID in reverse(l:synstack)
+                let l:name = synIDattr(l:synID, 'name')
+                for l:reg in l:regions
+                    if l:name =~ '\v^'.l:reg[0].'$'
+                        return l:reg[1]
+                    endif
+                endfor
+            endfor
+        endif
+        return l:regions[0][1]
+    else
+        return &ft
+    endif
 endfunction
 
 
@@ -292,7 +319,8 @@ endfunction
 
 " block (=aligned) comments {{{2
 function! s:BlockComment() range
-    call s:BlockCommentWork(a:firstline, a:lastline)
+    " TODO: join preceding/trailing blockcomments (if indentation level fits)
+    call s:BlockCommentWork(a:firstline, a:lastline, 1, 1)
 endfunction
 function! s:BlockUnComment() range
     call s:BlockUnCommentWork(a:firstline, a:lastline)
@@ -302,16 +330,16 @@ function! s:ToggleBlockComment() range
 endfunction
 
 " block (=aligned) commenting {{{3
-function! s:BlockCommentWork(firstln, lastln)
+function! s:BlockCommentWork(firstln, lastln, mayprepend, mayappend)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
     let l:pos = getpos('.')
 
-	" get comment chars
-    let l:cs = g:GetBlockCommentStrings(&ft)
+    " get comment chars
+    let l:cs = g:GetBlockCommentStrings(s:GuessSyntaxRegion(l:firstln, 1))
     let l:ci = s:GetCommentInfo(l:cs)
 
-	" get common alignment levels
+    " detect alignment
     let [l:lCol, l:lNo, l:pad] = s:GetMultilineIndent(l:firstln, l:lastln)
     if l:cs[1] != ''
         let l:rCol = s:GetDisplayWidth(l:firstln, l:lastln)
@@ -320,35 +348,30 @@ function! s:BlockCommentWork(firstln, lastln)
         let l:rCol = -1
     endif
 
-    " 
-	let l:mayappend = 1
-	let l:mayprepend = 1
-
-    " TODO: join preceding/trailing blockcomments (if indentation level fits)
-
-	if l:mayappend
-		call append(l:lastln, l:pad . l:cs[3])
-	endif
-	if l:mayprepend
-		call append(l:firstln - 1, l:pad . l:cs[2])
-		let l:firstln += 1
-		let l:lastln += 1
-		let l:pos[1] += 1
-	endif
-
+    " perform commenting
     call s:DoBlockComment(l:firstln, l:lastln, l:ci, l:lCol, l:rCol, l:pad)
 
+    " append/prepend block markers
+    if a:mayappend
+        call append(l:lastln, l:pad . l:cs[3])
+    endif
+    if a:mayprepend
+        call append(l:firstln - 1, l:pad . l:cs[2])
+        let l:pos[1] += 1
+    endif
+
+    " restore cursor
     call setpos('.', l:pos)
 endfunction
 
 function! s:DoBlockComment(firstln, lastln, ci, left, right, pad)
-	for l:lineNo in range(a:firstln, a:lastln)
+    for l:lineNo in range(a:firstln, a:lastln)
         let l:line = getline(l:lineNo)
         if s:IsBlank(l:line) && l:line !~ '\v^\s*%'.(a:left+1).'v'
             let l:line = a:pad
         endif
         call setline(l:lineNo, s:AddCommentAlign(l:line, a:ci, a:left, a:right))
-	endfor
+    endfor
 endfunction
 
 " block uncommenting {{{3
@@ -356,43 +379,44 @@ function! s:BlockUnCommentWork(firstln, lastln)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
     let l:pos = getpos('.')
+    let l:cStart = 0
+    let l:cEnd = 0
 
-	" get comment chars
-    let l:cs = g:GetBlockCommentStrings(&ft)
+    " get comment chars
+    let l:cs = g:GetBlockCommentStrings(s:GuessSyntaxRegion(l:firstln, 1))
     let l:ci = s:GetCommentInfo(l:cs)
 
-    " let l:comment_start = 0
-    " let l:comment_end = 0
-
-	" loop for each line
+    " loop for each line
     let l:lineNo = l:firstln
-	while l:lineNo <= l:lastln
-		let l:line = getline(l:lineNo)
-
+    while l:lineNo <= l:lastln
+        let l:line = getline(l:lineNo)
         " block comment start/stop line - delete line
-		if l:line =~ l:ci['mPat'] 
-			execute l:lineNo . 'd'
-			let l:lineNo -= 1
-			let l:lastln -= 1
+        if l:line =~ l:ci['mPat'] 
+            execute l:lineNo . 'd'
             if l:lineNo < l:pos[1]
                 let l:pos[1] -= 1
             endif
-
-		" commented code line - remove comment
-		else
+            let l:lineNo -= 1
+            let l:lastln -= 1
+        " commented code line - remove comment
+        else
             let [l:isComment, l:text] = s:RemoveComment(l:line, l:ci)
             if l:isComment
                 call setline(l:lineNo, l:text)
+                if l:lineNo == l:firstln
+                    let l:cStart = 1
+                endif
+                if l:lineNo == l:lastln
+                    let l:cEnd = 1
+                endif
             endif
-		endif
+        endif
+        let l:lineNo += 1
+    endwhile
 
-		let l:lineNo = l:lineNo + 1
-	endwhile
-
-	" look at line above block
-    " if l:comment_start
+    " look at line above block
+    if l:cStart
         let l:line = getline(l:firstln - 1)
-
         " abandoned begin comment block line - delete line
         if l:line =~ l:ci['aPat']
             execute (l:firstln - 1) . 'd'
@@ -409,12 +433,11 @@ function! s:BlockUnCommentWork(firstln, lastln)
                 let l:pos[1] += 1
             endif
         endif
-    " endif
+    endif
 
-	" look at line below block
-    " if l:comment_end
+    " look at line below block
+    if l:cEnd
         let l:line = getline(l:lastln + 1)
-
         " abandoned end comment block line - delete line
         if l:line =~ l:ci['oPat']
             execute (l:lastln + 1) . 'd'
@@ -426,98 +449,102 @@ function! s:BlockUnCommentWork(firstln, lastln)
                 call append(l:lastln, l:match[0] . l:cs[2])
             endif
         endif
-    " endif
+    endif
 
+    " restore cursor
     call setpos('.', l:pos)
 endfunction
 
 " toggle block comments {{{3
-function! s:ToggleBlockCommentWork(firstln, lastln) range
+function! s:ToggleBlockCommentWork(firstln, lastln)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
 
-	" get comment chars
-    let l:cs = g:GetBlockCommentStrings(&ft)
+    " get comment chars
+    let l:cs = g:GetBlockCommentStrings(s:GuessSyntaxRegion(l:firstln, 1))
     let l:ci = s:GetCommentInfo(l:cs)
 
-	" loop for each line
+    " join bottom block
+
+    " loop starts at bottom (to avoid confusion about deleted lines) 
     let l:type = 'w'
-	let l:startln = l:lastln
-	let l:stopln = l:lastln
-	let l:lineNo = l:lastln
+    let l:startln = l:lastln
+    let l:stopln = l:lastln
+    let l:lineNo = l:lastln
     while l:lineNo >= l:firstln
-		let l:line = getline(l:lineNo)
+        let l:line = getline(l:lineNo)
         let l:indent = s:ColToPhysical(l:line, indent(l:lineNo))
 
-		let l:do_comment = 0
-		let l:do_uncomment = 0
-		let l:decrement = 0
+        let l:do_comment = 0
+        let l:do_uncomment = 0
+        let l:decrement = 0
 
-		" comment
-		if l:line =~ l:ci['cPat'] || l:line =~ l:ci['mPat']
-			if l:type == 'w'
-				let l:stopln = l:lineNo
-			elseif l:type == 'tw'
-				let l:do_comment = 1
-			elseif l:type == 't'
-				let l:do_comment = 1
-				let l:startln = l:lineNo + 1
-			endif
-			let l:type = 'c'
+        " comment
+        if l:line =~ l:ci['cPat'] || l:line =~ l:ci['mPat']
+            if l:type == 'w'
+                let l:stopln = l:lineNo
+            elseif l:type == 'tw'
+                let l:do_comment = 1
+            elseif l:type == 't'
+                let l:do_comment = 1
+                let l:startln = l:lineNo + 1
+            endif
+            let l:type = 'c'
 
-		" text
-		elseif !s:IsBlank(l:line)
-			if l:type == 'w'
-				let l:stopln = l:lineNo
-			elseif l:type == 'c'
-				let l:do_uncomment = 1
-				let l:startln = l:lineNo + 1
-			endif
-			let l:type = 't'
+        " text
+        elseif !s:IsBlank(l:line)
+            if l:type == 'w'
+                let l:stopln = l:lineNo
+            elseif l:type == 'c'
+                let l:do_uncomment = 1
+                let l:startln = l:lineNo + 1
+            endif
+            let l:type = 't'
 
-		" blank
-		else
-			if l:type == 'c'
-				let l:type = 'w'
-				let l:do_uncomment = 1
-				let l:startln = l:lineNo + 1
-			elseif l:type == 't'
-				let l:type = 'tw'
-				let l:startln = l:lineNo + 1
-			endif
-		endif
+        " blank
+        else
+            if l:type == 'c'
+                let l:type = 'w'
+                let l:do_uncomment = 1
+                let l:startln = l:lineNo + 1
+            elseif l:type == 't'
+                let l:type = 'tw'
+                let l:startln = l:lineNo + 1
+            endif
+        endif
 
-		" perform operation
-		if l:do_comment
-            call s:BlockCommentWork(l:startln, l:stopln)
-			let l:stopln = l:lineNo
-		elseif l:do_uncomment
+        " do current block
+        if l:do_comment
+            call s:BlockCommentWork(l:startln, l:stopln, 1, 1)
+            let l:stopln = l:lineNo
+        elseif l:do_uncomment
             call s:BlockUnCommentWork(l:startln, l:stopln)
-			let l:stopln = l:lineNo
-		endif
+            let l:stopln = l:lineNo
+        endif
 
-		let l:lineNo -= 1
+        let l:lineNo -= 1
     endwhile
 
-	let l:do_comment = 0
-	let l:do_uncomment = 0
+    let l:do_comment = 0
+    let l:do_uncomment = 0
 
-	if l:type == 'c'
-		let l:do_uncomment = 1
-		let l:startln = l:firstln
-	elseif l:type == 't'
-		let l:do_comment = 1
-		let l:startln = l:firstln
-	elseif l:type == 'tw'
-		let l:do_comment = 1
-	endif
-	if l:do_comment
-        call s:BlockCommentWork(l:startln, l:stopln)
-		let l:stopln = l:lineNo
-	elseif l:do_uncomment
+    " do last block
+    if l:type == 'c'
+        let l:do_uncomment = 1
+        let l:startln = l:firstln
+    elseif l:type == 't'
+        let l:do_comment = 1
+        let l:startln = l:firstln
+    elseif l:type == 'tw'
+        let l:do_comment = 1
+    endif
+    if l:do_comment
+        call s:BlockCommentWork(l:startln, l:stopln, 1, 1)
+        let l:stopln = l:lineNo
+    elseif l:do_uncomment
         call s:BlockUnCommentWork(l:startln, l:stopln)
-		let l:stopln = l:lineNo
-	endif
+        let l:stopln = l:lineNo
+    endif
 endfunction
 " 3}}}
 " 2}}}
@@ -526,7 +553,7 @@ endfunction
 " add simple comments {{{3
 " TODO: handle BackupComment() properly
 function! s:Comment() range
-    let l:cs = g:GetCommentStrings(&ft)
+    let l:cs = g:GetCommentStrings(s:GuessSyntaxRegion(a:firstline))
     let l:ci = s:GetCommentInfo(l:cs)
 
     for l:lineNo in range(a:firstline, a:lastline)
@@ -539,7 +566,7 @@ endfunction
 
 " remove simple comments {{{3
 function! s:UnComment() range
-    let l:cs = g:GetCommentStrings(&ft)
+    let l:cs = g:GetCommentStrings(s:GuessSyntaxRegion(a:firstline))
     let l:ci = s:GetCommentInfo(l:cs)
 
     for l:lineNo in range(a:firstline, a:lastline)
@@ -555,7 +582,7 @@ endfunction
 
 " toggle simple comments {{{3
 function! s:ToggleComment() range
-    let l:cs = g:GetCommentStrings(&ft)
+    let l:cs = g:GetCommentStrings(s:GuessSyntaxRegion(a:firstline))
     let l:ci = s:GetCommentInfo(l:cs)
 
     for l:lineNo in range(a:firstline, a:lastline)
