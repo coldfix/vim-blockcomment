@@ -10,20 +10,16 @@
 " Simply drop this file into your plugin directory.
 "
 
-if v:version < 700 || !has("eval") || !has("autocmd")
+if v:version < 700 || !has("autocmd")
     echoerr 'blockcomment requires VIM 7, compiled with +eval +autocmd'
-    " Note:
-    " +autocmd: &ft
-    " +eval:    substitute
+    " Note: +autocmd is required for &ft
     finish
 endif
 
 " Agenda:
 " > join neighboring comment blocks if overlap is detected
 " > Backup and restore comment termination sequences when required
-" > provide bindings to be used with a motion command
-" > smarter pointer restorage
-" > 
+" > smarter cursor restorage
 
 " TODO: check if repeat#set is present
 " TODO: whitespace when uncommenting blank lines...?
@@ -31,33 +27,27 @@ endif
 " TODO: if GuessSyntaxRegion(firstline) != GuessSyntaxRegion(lastline) ..
 
 " mappings {{{1
-" plugins {{{2
-map <silent> <Plug>BlockComment       :call <SID>BlockComment()<CR>:silent! call repeat#set("\<Plug>BlockComment")<CR>
-map <silent> <Plug>BlockUnComment     :call <SID>BlockUnComment()<CR>:silent! call repeat#set("\<Plug>BlockUnComment")<CR>
-map <silent> <Plug>ToggleBlockComment :call <SID>ToggleBlockComment()<CR>:silent! call repeat#set("\<Plug>ToggleBlockComment")<CR>
+function! s:Plugin(name, key)
+    exe 'map <silent> <Plug>'.a:name.' '.
+                \ ':call <SID>OnPlug("'.a:name.'")<CR>'
+    exe 'nmap <silent> '.a:key.' '.
+                \ ':call <SID>SetPlug("'.a:name.'")<CR>'.
+                \ ':set opfunc=<SID>OnMotion<CR>g@'
+    exe 'vmap <silent> '.a:key.' <Plug>'.a:name
+    exe 'map <silent> '.toupper(a:key).' <Plug>'.a:name
+endfunction
 
-map <silent> <Plug>RBlockComment       :call <SID>RBlockComment()<CR>:silent! call repeat#set("\<Plug>RBlockComment")<CR>
-map <silent> <Plug>RBlockUnComment     :call <SID>RBlockUnComment()<CR>:silent! call repeat#set("\<Plug>RBlockUnComment")<CR>
-map <silent> <Plug>ToggleRBlockComment :call <SID>ToggleRBlockComment()<CR>:silent! call repeat#set("\<Plug>ToggleRBlockComment")<CR>
+call s:Plugin('BlockComment', '\\a')
+call s:Plugin('BlockUnComment', '\\u')
+call s:Plugin('ToggleBlockComment', '\\o')
 
-map <silent> <Plug>Comment            :call <SID>Comment()<CR>:silent! call repeat#set("\<Plug>Comment")<CR>
-map <silent> <Plug>UnComment          :call <SID>UnComment()<CR>:silent! call repeat#set("\<Plug>UnComment")<CR>
-map <silent> <Plug>ToggleComment      :call <SID>ToggleComment()<CR>:silent! call repeat#set("\<Plug>ToggleComment")<CR>
+call s:Plugin('RBlockComment', '\0a')
+call s:Plugin('RBlockUnComment', '\0u')
+call s:Plugin('ToggleRBlockComment', '\0o')
 
-" key mappings {{{2
-map <silent> \\a    <Plug>BlockComment
-map <silent> \\u    <Plug>BlockUnComment
-map <silent> \\\    <Plug>ToggleBlockComment
-
-map <silent> \0a    <Plug>RBlockComment
-map <silent> \0u    <Plug>RBlockUnComment
-map <silent> \00    <Plug>ToggleRBlockComment
-
-map <silent> \"a    <Plug>Comment
-map <silent> \"u    <Plug>UnComment
-map <silent> \""    <Plug>ToggleComment
-" 2}}}
-" 1}}}
+call s:Plugin('Comment', '\"a')
+call s:Plugin('UnComment', '\"u')
+call s:Plugin('ToggleComment', '\"o')
 
 " Comment strings {{{1
 " SingleLineComment: filetype => [left, fillchar]
@@ -255,7 +245,6 @@ function! s:GetCommentMarker(ci, ...)
         \ a:ci['inner'][0].repeat(a:ci['fill'], l:orep).a:ci['outer'][1]
     \ ]
 endfunction
-" 1}}}
 
 " Implementation {{{1
 " utility functions {{{2
@@ -374,22 +363,35 @@ function! s:RestoreComments(str, ci)
     return a:str
 endfunction
 
-
 " block (=aligned) comments {{{2
-function! s:BlockComment() range
-    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:BlockCommentWork(a:firstline, a:lastline, l:ci, 1, 1)
+
+function! s:BlockComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:BlockCommentWork(a:firstln, a:lastln, l:ci, 1, 1)
 endfunction
-function! s:BlockUnComment() range
-    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:BlockUnCommentWork(a:firstline, a:lastline, l:ci)
+function! s:BlockUnComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:BlockUnCommentWork(a:firstln, a:lastln, l:ci)
 endfunction
-function! s:ToggleBlockComment() range
-    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:ToggleBlockCommentWork(a:firstline, a:lastline, l:ci)
+function! s:ToggleBlockComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:ToggleBlockCommentWork(a:firstln, a:lastln, l:ci)
 endfunction
 
-" block (=aligned) commenting {{{3
+function! s:RBlockComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:BlockCommentWork(a:firstln, a:lastln, l:ci, 1, 1)
+endfunction
+function! s:RBlockUnComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:BlockUnCommentWork(a:firstln, a:lastln, l:ci)
+endfunction
+function! s:ToggleRBlockComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    call s:ToggleBlockCommentWork(a:firstln, a:lastln, l:ci)
+endfunction
+
+" comment {{{3
 function! s:BlockCommentWork(firstln, lastln, ci, mayprepend, mayappend)
     let l:pos = getpos('.')
 
@@ -427,7 +429,7 @@ function! s:BlockCommentWork(firstln, lastln, ci, mayprepend, mayappend)
     call setpos('.', l:pos)
 endfunction
 
-" block uncommenting {{{3
+" uncomment {{{3
 function! s:BlockUnCommentWork(firstln, lastln, ci)
     let l:firstln = a:firstln
     let l:lastln = a:lastln
@@ -506,7 +508,7 @@ function! s:BlockUnCommentWork(firstln, lastln, ci)
     call setpos('.', l:pos)
 endfunction
 
-" toggle block comments {{{3
+" toggle {{{3
 function! s:ToggleBlockCommentWork(firstln, lastln, ci)
     " loop starts at bottom (to avoid confusion about deleted lines) 
     let l:type = 'w'    " w=whitespace, t=text, c=comment, tw=t->w
@@ -549,27 +551,13 @@ function! s:ToggleBlockCommentWork(firstln, lastln, ci)
     endif
 endfunction
 " 3}}}
-" 2}}}
-" ralign-block comments {{{2
-function! s:RBlockComment() range
-    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:BlockCommentWork(a:firstline, a:lastline, l:ci, 1, 1)
-endfunction
-function! s:RBlockUnComment() range
-    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:BlockUnCommentWork(a:firstline, a:lastline, l:ci)
-endfunction
-function! s:ToggleRBlockComment() range
-    let l:ci = s:GetCommentPatterns(g:GetRBlockCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    call s:ToggleBlockCommentWork(a:firstline, a:lastline, l:ci)
-endfunction
 
 " normal comments {{{2
 " add simple comments {{{3
 " TODO: handle BackupComment() properly
-function! s:Comment() range
-    let l:ci = s:GetCommentPatterns(g:GetCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    for l:lineNo in range(a:firstline, a:lastline)
+function! s:Comment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    for l:lineNo in range(a:firstln, a:lastln)
         let l:line = getline(l:lineNo)
         if !s:IsBlank(l:line)
             call setline(l:lineNo, s:AddComment(l:line, l:ci))
@@ -578,11 +566,7 @@ function! s:Comment() range
 endfunction
 
 " remove simple comments {{{3
-function! s:UnComment() range
-    call s:UnCommentWork(a:firstline, a:lastline)
-endfunction
-
-function! s:UnCommentWork(firstln, lastln)
+function! s:UnComment(firstln, lastln)
     let l:ci = s:GetCommentPatterns(g:GetCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
     for l:lineNo in range(a:firstln, a:lastln)
         let l:line = getline(l:lineNo)
@@ -596,9 +580,9 @@ function! s:UnCommentWork(firstln, lastln)
 endfunction
 
 " toggle simple comments {{{3
-function! s:ToggleComment() range
-    let l:ci = s:GetCommentPatterns(g:GetCommentStrings(s:GuessSyntaxRegion(a:firstline, 1)))
-    for l:lineNo in range(a:firstline, a:lastline)
+function! s:ToggleComment(firstln, lastln)
+    let l:ci = s:GetCommentPatterns(g:GetCommentStrings(s:GuessSyntaxRegion(a:firstln, 1)))
+    for l:lineNo in range(a:firstln, a:lastln)
         let l:line = getline(l:lineNo)
         if !s:IsBlank(l:line)
             let [l:isComment, l:text] = s:RemoveComment(l:line, l:ci)
@@ -612,6 +596,25 @@ function! s:ToggleComment() range
 endfunction
 " 3}}}
 " 2}}}
+
+" Plugin stuff {{{1
+let s:Plug = {}
+function! s:SetPlug(name)
+    let s:Plug.Name = a:name
+    let s:Plug.Func = function("s:".a:name)
+endfunction
+
+function! s:OnMotion(type)
+    let startln = line("'[")
+    let stopln = line("']")
+    call s:Plug.Func(startln, stopln)
+endfunction
+
+function! s:OnPlug(name) range
+    call s:SetPlug(a:name)
+    call s:Plug.Func(a:firstline, a:lastline)
+    call repeat#set("\<Plug>".a:name)
+endfunction
 " 1}}}
 
 " vim: fdm=marker fdl=0

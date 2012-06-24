@@ -14,6 +14,7 @@ For each of these modes there is a mapping to toggle/comment/uncomment.
 
 ### Features
 
+* Keybindings for both **range** and **motion** modes
 * Works for large variety of filetypes using `&cms`
 * Individual configuration per filetype possible
 * Can detect syntax-regions (for example php/html/javascript)
@@ -34,9 +35,14 @@ Alternatively, you can simply drop the `blockcomment.vim` file into your `~/.vim
 
 The default key bindings are:
 
-1. `\\\`/`\\a`/`\\u` for Block toggle/comment/uncomment
-2. `\00`/`\0a`/`\0u` for RBlock toggle/comment/uncomment
-3. `\""`/`\"a`/`\"u` for Normal toggle/comment/uncomment
+1. `\\o`/`\\a`/`\\u` for Block toggle/comment/uncomment
+2. `\0o`/`\0a`/`\0u` for RBlock toggle/comment/uncomment
+3. `\"o`/`\"a`/`\"u` for Normal toggle/comment/uncomment
+
+In normal mode, this will trigger a motion-command.
+In visual mode the selected range will be used.
+
+For each of these keybindings, there is also an uppercase variant which always invokes the corresponding command with a range.
 
 
 ### Missing features
@@ -46,6 +52,5 @@ It is therefore thoroughly tested.  Use at your own risk.
 
 The following features are not implemented yet:
 
-* Provide bindings to be used with a motion command
 * Backup and restore comment termination sequences when required
 
