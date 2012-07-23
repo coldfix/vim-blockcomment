@@ -82,7 +82,7 @@ let g:SingleLineComment = {
 " MultiLineComment: filetype => [start, stop, left, right, fillchar]
 let g:MultiLineComment = {
     \ 'c':        ['/*',    '*/', '*',  '', '*'],
-    \ 'css':      ['/*',    '*/', '*',  '', '*'],
+    \ 'css':      ['/*',    '*/', '*',  '', '-'],
     \ 'entity':   ["<!--", '-->', ' !', '', ''],
     \ 'html':     ["<!--", '-->', ' !', '', ''],
     \ 'markdown': ["<!--", '-->', ' !', '', ''],
